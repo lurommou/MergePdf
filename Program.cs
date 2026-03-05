@@ -28,6 +28,10 @@ static class Program
 
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         ApplicationConfiguration.Initialize();
+
+        // 註冊 Windows 系統字型解析器，解決 PDFsharp 合併時找不到字型的例外
+        PdfSharp.Fonts.GlobalFontSettings.FontResolver = new Utils.WindowsFontResolver();
+
         Application.Run(new MainForm());
     }
 }

@@ -1,10 +1,13 @@
+using MergePdf.Models;
 using PdfSharpCore = PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
+using PdfSharp.Drawing;
+using System.Drawing;
 
 namespace MergePdf.Services;
 
 /// <summary>
-/// PDF 合併服務，負責使用 PDFsharp 將多個 PDF 檔案合併為一。
+/// PDF 合併服務，負責使用 PDFsharp 將多個 PDF 頁面合併為一。
 /// </summary>
 public class PdfMergeService
 {
@@ -12,35 +15,47 @@ public class PdfMergeService
         AppDomain.CurrentDomain.BaseDirectory, "Logs");
 
     /// <summary>
-    /// 非同步合併多個 PDF 檔案至指定輸出路徑。
+    /// 非同步合併指定頁面清單至輸出路徑。
     /// </summary>
-    /// <param name="sourcePaths">來源 PDF 檔案路徑清單（依順序合併）。</param>
+    /// <param name="pages">欲合併的頁面清單（依順序）。</param>
     /// <param name="outputPath">合併後輸出檔案路徑。</param>
-    /// <exception cref="ArgumentException">來源清單為空時擲出。</exception>
-    /// <exception cref="IOException">檔案被占用或無存取權限時擲出。</exception>
-    /// <exception cref="PdfSharp.Pdf.IO.PdfReaderException">PDF 損毀時擲出。</exception>
-    public async Task MergeAsync(IReadOnlyList<string> sourcePaths, string outputPath)
+    public async Task MergeAsync(IReadOnlyList<PdfPageItem> pages, string outputPath)
     {
-        if (sourcePaths == null || sourcePaths.Count == 0)
-            throw new ArgumentException("至少需要一個來源 PDF 檔案。", nameof(sourcePaths));
+        if (pages == null || pages.Count == 0)
+            throw new ArgumentException("至少需要一個頁面。", nameof(pages));
 
         await Task.Run(() =>
         {
             using var outputDocument = new PdfSharpCore.PdfDocument();
 
-            // 來源文件必須保持開啟直到輸出存檔完成，否則 PDFsharp 6.x 會報錯
-            var inputDocuments = new List<PdfSharpCore.PdfDocument>();
+            // 快取已開啟的來源文件，同一檔案只開啟一次
+            var openedDocuments = new Dictionary<string, PdfSharpCore.PdfDocument>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                foreach (var sourcePath in sourcePaths)
+                foreach (var page in pages)
                 {
-                    Log($"正在處理：{sourcePath}");
-
-                    var inputDocument = PdfReader.Open(sourcePath, PdfDocumentOpenMode.Import);
-                    inputDocuments.Add(inputDocument);
-                    for (var i = 0; i < inputDocument.PageCount; i++)
+                    if (!openedDocuments.TryGetValue(page.SourceFilePath, out var inputDocument))
                     {
-                        outputDocument.AddPage(inputDocument.Pages[i]);
+                        Log($"正在開啟：{page.SourceFilePath}");
+                        inputDocument = PdfReader.Open(page.SourceFilePath, PdfDocumentOpenMode.Import);
+                        openedDocuments[page.SourceFilePath] = inputDocument;
+                    }
+
+                    var newPage = outputDocument.AddPage(inputDocument.Pages[page.PageIndex]);
+
+                    if (page.Annotations.Count > 0)
+                    {
+                        using var gfx = XGraphics.FromPdfPage(newPage);
+                        // PDFsharp 的預設單位為 Point (1/72 inch). 
+                        // 我們在預覽畫布中使用的座標，是基於 PDFtoImage 的渲染設定 (Dpi=300).
+                        // Dpi=300 表示 1 inch = 300 pixels. 
+                        // 因此：Pixel 到 Point 的轉換率為 72 / 300 = 0.24.
+                        float scale = 72f / 300f;
+
+                        foreach (var ann in page.Annotations)
+                        {
+                            DrawAnnotationToPdf(gfx, ann, scale);
+                        }
                     }
                 }
 
@@ -50,7 +65,7 @@ public class PdfMergeService
             }
             finally
             {
-                foreach (var doc in inputDocuments)
+                foreach (var doc in openedDocuments.Values)
                 {
                     doc.Dispose();
                 }
@@ -73,6 +88,66 @@ public class PdfMergeService
         catch
         {
             // Log 寫入失敗不應影響主流程
+        }
+    }
+
+    private void DrawAnnotationToPdf(XGraphics gfx, BaseAnnotation ann, float scale)
+    {
+        var scaledBounds = new XRect(
+            ann.Bounds.X * scale,
+            ann.Bounds.Y * scale,
+            ann.Bounds.Width * scale,
+            ann.Bounds.Height * scale);
+
+        var color = XColor.FromArgb(ann.Color.A, ann.Color.R, ann.Color.G, ann.Color.B);
+        var pen = new XPen(color, ann.Thickness * scale);
+        var brush = new XSolidBrush(color);
+
+        if (ann is TextAnnotation textAnn)
+        {
+            // PDFsharp 字型大小單位也是 Point，直接使用預覽設定的 Size * 縮放率
+            var font = new XFont(textAnn.FontName, textAnn.FontSize * scale, XFontStyleEx.Regular);
+            // XGraphics.DrawString 預設以基線 (Baseline) 對齊，而 WinForms 以左上角對齊
+            // 因此需要手動指定 StringFormat 為左上角對齊以保持一致
+            var format = new XStringFormat { Alignment = XStringAlignment.Near, LineAlignment = XLineAlignment.Near };
+            gfx.DrawString(textAnn.Text, font, brush, scaledBounds, format);
+        }
+        else if (ann is RectAnnotation)
+        {
+            gfx.DrawRectangle(pen, scaledBounds);
+        }
+        else if (ann is EllipseAnnotation)
+        {
+            gfx.DrawEllipse(pen, scaledBounds);
+        }
+        else if (ann is ArrowAnnotation arrowAnn)
+        {
+            float sX = arrowAnn.StartPoint.X * scale;
+            float sY = arrowAnn.StartPoint.Y * scale;
+            float eX = arrowAnn.EndPoint.X * scale;
+            float eY = arrowAnn.EndPoint.Y * scale;
+
+            gfx.DrawLine(pen, sX, sY, eX, eY);
+
+            // 繪製箭頭頭部
+            double angle = Math.Atan2(eY - sY, eX - sX);
+            double arrowSize = 15.0 * scale;
+            double arrowAngle = Math.PI / 6.0;
+
+            XPoint p1 = new XPoint(
+                eX - arrowSize * Math.Cos(angle - arrowAngle),
+                eY - arrowSize * Math.Sin(angle - arrowAngle));
+            XPoint p2 = new XPoint(
+                eX - arrowSize * Math.Cos(angle + arrowAngle),
+                eY - arrowSize * Math.Sin(angle + arrowAngle));
+
+            gfx.DrawLine(pen, new XPoint(eX, eY), p1);
+            gfx.DrawLine(pen, new XPoint(eX, eY), p2);
+        }
+        else if (ann is LineAnnotation lineAnn)
+        {
+            gfx.DrawLine(pen, lineAnn.StartPoint.X * scale, lineAnn.StartPoint.Y * scale, 
+                              lineAnn.EndPoint.X * scale, lineAnn.EndPoint.Y * scale);
         }
     }
 }
