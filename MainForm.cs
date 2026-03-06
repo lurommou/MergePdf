@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using MergePdf.Models;
 using MergePdf.Services;
 using MergePdf.Utils;
@@ -25,7 +26,7 @@ public partial class MainForm : Form
     private int _previewIndex = -1;
 
     // ─── 繪圖狀態 ───
-    private enum DrawMode { Select, Text, Line, Arrow, Rect, Ellipse }
+    private enum DrawMode { Select, Text, Line, Arrow, Rect, Mosaic, Ellipse }
     private DrawMode _currentDrawMode = DrawMode.Select;
     private Color _currentDrawColor = Color.Red;
     private Font _currentDrawFont = new Font("Microsoft JhengHei UI", 24);
@@ -371,6 +372,7 @@ public partial class MainForm : Form
         btnDrawLine.Click += (s, e) => SetDrawMode(DrawMode.Line, btnDrawLine);
         btnDrawArrow.Click += (s, e) => SetDrawMode(DrawMode.Arrow, btnDrawArrow);
         btnDrawRect.Click += (s, e) => SetDrawMode(DrawMode.Rect, btnDrawRect);
+        btnDrawMosaic.Click += (s, e) => SetDrawMode(DrawMode.Mosaic, btnDrawMosaic);
         btnDrawEllipse.Click += (s, e) => SetDrawMode(DrawMode.Ellipse, btnDrawEllipse);
 
         btnDrawColor.Click += BtnDrawColor_Click;
@@ -390,7 +392,7 @@ public partial class MainForm : Form
     private void SetDrawMode(DrawMode mode, ToolStripButton activeButton, bool keepSelection = false)
     {
         _currentDrawMode = mode;
-        var buttons = new[] { btnDrawSelect, btnDrawText, btnDrawLine, btnDrawArrow, btnDrawRect, btnDrawEllipse };
+        var buttons = new[] { btnDrawSelect, btnDrawText, btnDrawLine, btnDrawArrow, btnDrawRect, btnDrawMosaic, btnDrawEllipse };
         foreach (var btn in buttons) btn.Checked = (btn == activeButton);
         if (!keepSelection)
         {
@@ -434,6 +436,43 @@ public partial class MainForm : Form
     {
         return new RectangleF(bounds.Right * scale - ResizeHandleSize / 2, bounds.Bottom * scale - ResizeHandleSize / 2, ResizeHandleSize, ResizeHandleSize);
     }
+    
+    private void DrawMosaicPreview(Graphics g, Image? sourceImage, MosaicAnnotation mosaic, float scale)
+    {
+        if (sourceImage == null)
+        {
+            mosaic.Draw(g, scale);
+            return;
+        }
+
+        var imageRect = new RectangleF(0, 0, sourceImage.Width, sourceImage.Height);
+        var clipped = RectangleF.Intersect(mosaic.Bounds, imageRect);
+        if (clipped.Width <= 0 || clipped.Height <= 0) return;
+
+        var srcRect = Rectangle.Round(clipped);
+        if (srcRect.Width <= 0 || srcRect.Height <= 0) return;
+
+        int blockSize = Math.Max(4, mosaic.BlockSize);
+        int smallWidth = Math.Max(1, (int)(clipped.Width / blockSize));
+        int smallHeight = Math.Max(1, (int)(clipped.Height / blockSize));
+
+        using var small = new Bitmap(smallWidth, smallHeight);
+        using (var sg = Graphics.FromImage(small))
+        {
+            sg.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            sg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            sg.DrawImage(sourceImage, new Rectangle(0, 0, smallWidth, smallHeight), srcRect, GraphicsUnit.Pixel);
+        }
+
+        var destRect = new RectangleF(clipped.X * scale, clipped.Y * scale, clipped.Width * scale, clipped.Height * scale);
+        var oldInterpolation = g.InterpolationMode;
+        var oldPixelOffset = g.PixelOffsetMode;
+        g.InterpolationMode = InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        g.DrawImage(small, destRect);
+        g.InterpolationMode = oldInterpolation;
+        g.PixelOffsetMode = oldPixelOffset;
+    }
 
     private void PictureBoxPreview_Paint(object? sender, PaintEventArgs e)
     {
@@ -451,7 +490,14 @@ public partial class MainForm : Form
             // 正在就地編輯的標註不渲染其文字，改由 TextBox 即時顯示
             if (ann == _editingTextAnn) continue;
 
-            ann.Draw(e.Graphics, scale);
+            if (ann is MosaicAnnotation mosaicAnn)
+            {
+                DrawMosaicPreview(e.Graphics, pictureBoxPreview.Image, mosaicAnn, scale);
+            }
+            else
+            {
+                ann.Draw(e.Graphics, scale);
+            }
             if (ann == _selectedAnnotation && _currentDrawMode == DrawMode.Select)
             {
                 using var dashPen = new Pen(Color.Blue, 1.5f) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
@@ -464,7 +510,14 @@ public partial class MainForm : Form
             }
         }
 
-        _drawingAnnotation?.Draw(e.Graphics, scale);
+        if (_drawingAnnotation is MosaicAnnotation mosaicDrawing)
+        {
+            DrawMosaicPreview(e.Graphics, pictureBoxPreview.Image, mosaicDrawing, scale);
+        }
+        else
+        {
+            _drawingAnnotation?.Draw(e.Graphics, scale);
+        }
     }
 
     private void PictureBoxPreview_MouseDown(object? sender, MouseEventArgs e)
@@ -536,6 +589,9 @@ public partial class MainForm : Form
                     break;
                 case DrawMode.Rect:
                     _drawingAnnotation = new RectAnnotation { Bounds = new RectangleF(imgPoint.X, imgPoint.Y, 0, 0), Color = _currentDrawColor };
+                    break;
+                case DrawMode.Mosaic:
+                    _drawingAnnotation = new MosaicAnnotation { Bounds = new RectangleF(imgPoint.X, imgPoint.Y, 0, 0) };
                     break;
                 case DrawMode.Ellipse:
                     _drawingAnnotation = new EllipseAnnotation { Bounds = new RectangleF(imgPoint.X, imgPoint.Y, 0, 0), Color = _currentDrawColor };
@@ -787,3 +843,10 @@ public partial class MainForm : Form
         }
     }
 }
+
+
+
+
+
+
+

@@ -3,6 +3,9 @@ using PdfSharpCore = PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
 using PdfSharp.Drawing;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using PDFtoImage;
 
 namespace MergePdf.Services;
 
@@ -52,9 +55,32 @@ public class PdfMergeService
                         // 因此：Pixel 到 Point 的轉換率為 72 / 300 = 0.24.
                         float scale = 72f / 300f;
 
+                        bool hasMosaic = false;
                         foreach (var ann in page.Annotations)
                         {
-                            DrawAnnotationToPdf(gfx, ann, scale);
+                            if (ann is MosaicAnnotation)
+                            {
+                                hasMosaic = true;
+                                break;
+                            }
+                        }
+
+                        Bitmap? pageBitmap = null;
+                        try
+                        {
+                            if (hasMosaic)
+                            {
+                                pageBitmap = RenderPageBitmap(page.SourceFilePath, page.PageIndex);
+                            }
+
+                            foreach (var ann in page.Annotations)
+                            {
+                                DrawAnnotationToPdf(gfx, ann, scale, pageBitmap);
+                            }
+                        }
+                        finally
+                        {
+                            pageBitmap?.Dispose();
                         }
                     }
                 }
@@ -91,7 +117,48 @@ public class PdfMergeService
         }
     }
 
-    private void DrawAnnotationToPdf(XGraphics gfx, BaseAnnotation ann, float scale)
+    private static Bitmap RenderPageBitmap(string filePath, int pageIndex)
+    {
+        var pdfBytes = File.ReadAllBytes(filePath);
+        using var outputStream = new MemoryStream();
+        var options = new RenderOptions
+        {
+            Dpi = 300,
+            AntiAliasing = PdfAntiAliasing.All
+        };
+        Conversion.SavePng(outputStream, pdfBytes, pageIndex, options: options);
+        outputStream.Seek(0, SeekOrigin.Begin);
+
+        using var tempImage = Image.FromStream(outputStream);
+        return new Bitmap(tempImage);
+    }
+
+    private static Bitmap CreateMosaicBitmap(Bitmap source, Rectangle srcRect, int blockSize)
+    {
+        int safeBlock = Math.Max(4, blockSize);
+        int smallWidth = Math.Max(1, srcRect.Width / safeBlock);
+        int smallHeight = Math.Max(1, srcRect.Height / safeBlock);
+
+        using var small = new Bitmap(smallWidth, smallHeight);
+        using (var sg = Graphics.FromImage(small))
+        {
+            sg.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            sg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            sg.DrawImage(source, new Rectangle(0, 0, smallWidth, smallHeight), srcRect, GraphicsUnit.Pixel);
+        }
+
+        var mosaic = new Bitmap(srcRect.Width, srcRect.Height);
+        using (var mg = Graphics.FromImage(mosaic))
+        {
+            mg.InterpolationMode = InterpolationMode.NearestNeighbor;
+            mg.PixelOffsetMode = PixelOffsetMode.Half;
+            mg.DrawImage(small, new Rectangle(0, 0, srcRect.Width, srcRect.Height));
+        }
+
+        return mosaic;
+    }
+
+    private void DrawAnnotationToPdf(XGraphics gfx, BaseAnnotation ann, float scale, Bitmap? sourceBitmap)
     {
         var scaledBounds = new XRect(
             ann.Bounds.X * scale,
@@ -115,6 +182,23 @@ public class PdfMergeService
         else if (ann is RectAnnotation)
         {
             gfx.DrawRectangle(pen, scaledBounds);
+        }
+        else if (ann is MosaicAnnotation mosaicAnn)
+        {
+            if (sourceBitmap == null) return;
+
+            var imageRect = new RectangleF(0, 0, sourceBitmap.Width, sourceBitmap.Height);
+            var clipped = RectangleF.Intersect(mosaicAnn.Bounds, imageRect);
+            if (clipped.Width <= 0 || clipped.Height <= 0) return;
+
+            var srcRect = Rectangle.Round(clipped);
+            using var mosaic = CreateMosaicBitmap(sourceBitmap, srcRect, mosaicAnn.BlockSize);
+            using var ms = new MemoryStream();
+            mosaic.Save(ms, ImageFormat.Png);
+            ms.Position = 0;
+            using var ximg = XImage.FromStream(ms);
+
+            gfx.DrawImage(ximg, clipped.X * scale, clipped.Y * scale, clipped.Width * scale, clipped.Height * scale);
         }
         else if (ann is EllipseAnnotation)
         {
@@ -146,8 +230,9 @@ public class PdfMergeService
         }
         else if (ann is LineAnnotation lineAnn)
         {
-            gfx.DrawLine(pen, lineAnn.StartPoint.X * scale, lineAnn.StartPoint.Y * scale, 
+            gfx.DrawLine(pen, lineAnn.StartPoint.X * scale, lineAnn.StartPoint.Y * scale,
                               lineAnn.EndPoint.X * scale, lineAnn.EndPoint.Y * scale);
         }
     }
 }
+

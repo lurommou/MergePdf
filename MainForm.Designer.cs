@@ -39,6 +39,7 @@ partial class MainForm
         btnDrawLine = new ToolStripButton();
         btnDrawArrow = new ToolStripButton();
         btnDrawRect = new ToolStripButton();
+        btnDrawMosaic = new ToolStripButton();
         btnDrawEllipse = new ToolStripButton();
         toolStripSeparator1 = new ToolStripSeparator();
         btnDrawColor = new ToolStripButton();
@@ -140,6 +141,7 @@ partial class MainForm
             btnDrawLine,
             btnDrawArrow,
             btnDrawRect,
+            btnDrawMosaic,
             btnDrawEllipse,
             toolStripSeparator1,
             btnDrawColor,
@@ -162,6 +164,7 @@ partial class MainForm
         btnDrawLine.Text = "📏 直線";
         btnDrawArrow.Text = "↗ 箭頭";
         btnDrawRect.Text = "⏹ 矩形";
+        btnDrawMosaic.Text = "🧩 馬賽克";
         btnDrawEllipse.Text = "⭕ 圓形";
 
         btnDrawColor.Text = "🎨 色彩";
@@ -291,6 +294,7 @@ partial class MainForm
     private ToolStripButton btnDrawLine;
     private ToolStripButton btnDrawArrow;
     private ToolStripButton btnDrawRect;
+    private ToolStripButton btnDrawMosaic;
     private ToolStripButton btnDrawEllipse;
     private ToolStripSeparator toolStripSeparator1;
     private ToolStripButton btnDrawColor;
@@ -299,3 +303,4 @@ partial class MainForm
     private ToolStripButton btnDrawDelete;
     private ToolStripButton btnDrawClear;
 }
+

@@ -86,6 +86,30 @@ public class EllipseAnnotation : BaseAnnotation
     }
 }
 
+public class MosaicAnnotation : BaseAnnotation
+{
+    /// <summary>
+    /// 馬賽克方塊大小（以原始影像像素為單位）。
+    /// </summary>
+    public int BlockSize { get; set; } = 12;
+
+    public override void Draw(Graphics g, float scale)
+    {
+        // 預覽或 PDF 沒有影像可取樣時，使用簡易方塊格線作為替代顯示
+        var rect = new RectangleF(Bounds.X * scale, Bounds.Y * scale, Bounds.Width * scale, Bounds.Height * scale);
+        using var fill = new SolidBrush(Color.FromArgb(200, 200, 200));
+        using var grid = new Pen(Color.FromArgb(160, 160, 160), 1f);
+
+        g.FillRectangle(fill, rect);
+
+        float block = Math.Max(4f, BlockSize * scale);
+        for (float x = rect.X; x < rect.Right; x += block)
+            g.DrawLine(grid, x, rect.Y, x, rect.Bottom);
+        for (float y = rect.Y; y < rect.Bottom; y += block)
+            g.DrawLine(grid, rect.X, y, rect.Right, y);
+    }
+}
+
 public class ArrowAnnotation : LineAnnotation
 {
     public override void Draw(Graphics g, float scale)
@@ -114,3 +138,5 @@ public class ArrowAnnotation : LineAnnotation
         g.DrawLine(pen, eX, eY, p2.X, p2.Y);
     }
 }
+
+
